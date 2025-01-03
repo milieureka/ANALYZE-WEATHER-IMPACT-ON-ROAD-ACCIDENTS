@@ -1,0 +1,1107 @@
+---
+title: "T09.P9"
+output:
+  html_document:
+    df_print: paged
+  pdf_document:
+    df_print: paged
+date: "2024-09-24"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# EDA
+
+```{r}
+# Load necessary libraries
+library(dplyr)
+
+# Load the data
+car_accident <- read.csv("~/Documents/R/car_accidents_victoria.csv", skip = 1)
+head(car_accident)
+```
+
+There're 1643 rows and 29 columns in this dataset. Because the original
+dataset has merged headers in the first row, I removed the first row to
+ensure accurate results for the next question.
+
+## Data type
+
+```{r}
+# Extracting data types of each column
+data_types <- sapply(car_accident, class)
+data_types
+```
+
+The data types in this dataset are as follows:
+
+├── **Numerical Data** (Quantitative: Can be measured, and arithmetic
+operations are meaningful)\
+│ ├── **Ratio Scale** (True zero point, meaningful ratios between
+measurements)\
+│ │ ├── **Accident Count** (Number of accidents: 0 accidents means no
+accidents at all, a true zero point)\
+│ ├── **Interval Scale** (No true zero, but differences between values
+are meaningful)\
+│ │ ├── **Temperature (Celsius or Fahrenheit)** (No true zero: 0°C
+doesn’t mean no temperature)\
+│ │ └── **Dates** (No true zero: the difference between two dates is
+meaningful, but 0 doesn’t imply "no date")\
+│\
+├── **Categorical Data** (Qualitative: Represents categories or labels,
+not quantities)\
+│ ├── **Nominal** (No inherent order, purely labels)\
+│ │ ├── **Region** (E.g., Eastern, Western, Northern: categories with no
+ranking or order)\
+│ └── **Ordinal** (Inherent order or ranking)\
+│ ├── **Severity** (an ordered set where Fatal \> Serious \> No injury/ Others )
+
+# Tidy data
+
+## Cleaning up columns
+
+```{r}
+library(stringr)
+cav_data_link <- '~/Documents/R/car_accidents_victoria.csv'
+top_row <- read_csv(cav_data_link, col_names = FALSE, n_max = 1)
+second_row <- read_csv(cav_data_link, n_max = 1)
+
+column_names <- second_row %>%
+  unlist(., use.names=FALSE) %>%
+  make.unique(., sep = "__") # double underscore
+
+column_names[2:5] <- str_c(column_names[2:5], '0', sep='__')
+
+daily_accidents <- read_csv(cav_data_link, skip = 2, col_names = column_names)
+```
+
+```{r}
+# Extract regions from the top row, converting to a vector
+regions <- unlist(top_row, use.names = FALSE)
+
+# Remove NA values from the regions list
+clean_regions <- na.omit(regions)
+
+# Get the unique regions and count them
+unique_regions <- unique(clean_regions)
+
+# Print the unique regions and their count
+print(unique_regions)
+```
+
+## Pivot longer and Pivot wider columns
+
+1.  Use pivot_longer to gather measurement columns: The first step is to
+    gather all columns related to FATAL, SERIOUS, NOINJURY, and OTHER
+    into a longer format. This operation converts multiple columns into
+    a single column (Incident_Type) that captures the type of incident
+    and another column (Region_Index) that identifies the region.
+
+```{r}
+library(tidyr)
+# Apply pivot_longer to gather measurement columns
+pivot_long <- daily_accidents %>%
+  pivot_longer(
+    cols = starts_with("FATAL") | starts_with("SERIOUS") | starts_with("NOINJURY") | starts_with("OTHER"),
+    names_to = c("Incident_Type", "Region_Index"),
+    names_sep = "__",
+    values_to = "Count"
+  )
+```
+
+2.  Convert the Region_Index values (numeric suffixes) into the actual
+    region names using the list of region names obtained from the
+    top_row of the dataset.
+
+```{r}
+# Convert Region_Index to numeric and map it to the actual region names
+pivot_long <- pivot_long %>%
+  mutate(Region_Index = as.numeric(Region_Index) + 1) %>% # Add 1 to align with R's 1-based indexing
+  mutate(Region = clean_regions[Region_Index]) %>%
+  dplyr::select(-Region_Index) # Remove the temporary numeric index
+```
+
+3.  Finally, use pivot_wider to transform the Incident_Type column into
+    separate columns for each incident type (FATAL, SERIOUS, etc.), with
+    the values from Count populating these new columns.
+
+```{r}
+tidy_data <- pivot_long %>%
+  pivot_wider(
+    names_from = Incident_Type,  # Incident_Type values (FATAL, SERIOUS, etc.) will become column names
+    values_from = Count          # Use the values from the Count column to fill the new columns
+  )
+```
+
+```{r}
+# Display the head of the final tidy data
+head(tidy_data)
+```
+
+## Make sure the variables are having the expected variable types in R
+
+```{r}
+# Check the structure of the data to see current variable types
+str(tidy_data)
+```
+
+As we can see the Date and Region is in character datatype, we will want
+the Date in Datetime type and Region to factor for categorical data.
+
+```{r}
+# Clean up data types
+tidy_data <- tidy_data %>%
+  mutate(
+    DATE = as.Date(DATE, format = "%d/%m/%Y"),  # Convert DATE to Date type
+    Region = as.factor(Region),                 # Convert Region to factor for categorical data
+  )
+
+# Print the structure of the cleaned dataset
+str(tidy_data)
+```
+
+## Fill the missing value
+
+There are 4 missing values in the FATAL, SERIOUS, and OTHER columns,
+which account for a small proportion of the overall dataset (4 missing
+values out of 11,501 records). Since we are dealing with time series
+data, it is important to maintain the continuity of the date sequence.
+Therefore, it is reasonable to assume that the missing values in these
+columns indicate no accidents occurred. As a result, we can impute the
+missing values by replacing them with 0.
+
+```{r}
+# Check for missing values in the dataset
+missing_summary <- tidy_data %>%
+  summarize(
+    missing_DATE = sum(is.na(DATE)),
+    missing_Region = sum(is.na(Region)),
+    missing_FATAL = sum(is.na(FATAL)),
+    missing_SERIOUS = sum(is.na(SERIOUS)),
+    missing_NOINJURY = sum(is.na(NOINJURY)),
+    missing_OTHER = sum(is.na(OTHER))
+  )
+
+# Print the summary of missing values
+print(missing_summary)
+```
+
+```{r}
+# Impute missing values in the FATAL, SERIOUS, and OTHER columns with 0
+tidy_data <- tidy_data %>%
+  mutate(
+    FATAL = replace_na(FATAL, 0),
+    SERIOUS = replace_na(SERIOUS, 0),
+    OTHER = replace_na(OTHER, 0)
+  )
+
+# Check the total number of missing values in each column
+colSums(is.na(tidy_data))
+```
+
+# Fitting distributions
+
+In this question, we will fit a couple of distributions to the
+“TOTAL_ACCIDENTS” data.
+
+## Fit a Poisson distribution and a negative binomial distribution on TOTAL_ACCIDENTS.
+
+```{r}
+library(fitdistrplus)
+# Create TOTAL_ACCIDENTS colum
+tidy_data <- tidy_data %>%
+  mutate(TOTAL_ACCIDENTS = FATAL + SERIOUS + NOINJURY + OTHER)
+
+# Group the data by date and calculate the total number of accidents for each date
+tidy_data_grouped <- tidy_data %>%
+  group_by(DATE) %>%
+  summarise(
+    FATAL = sum(FATAL, na.rm = TRUE),
+    SERIOUS = sum(SERIOUS, na.rm = TRUE),
+    NOINJURY = sum(NOINJURY, na.rm = TRUE),
+    OTHER = sum(OTHER, na.rm = TRUE),
+    TOTAL_ACCIDENTS = sum(TOTAL_ACCIDENTS, na.rm = TRUE)
+  )
+
+# Fit a Poisson distribution to the grouped data
+fit_poisson <- fitdist(tidy_data_grouped$TOTAL_ACCIDENTS, "pois")
+
+# Fit a Negative Binomial distribution to the grouped data
+fit_negbinom <- fitdist(tidy_data_grouped$TOTAL_ACCIDENTS, "nbinom")
+
+# Print the results
+summary(fit_poisson)
+summary(fit_negbinom)
+```
+
+## Compare the log-likelihood of two fitted distributions. 
+
+```{r}
+# Extract log-likelihoods
+loglik_poisson <- fit_poisson$loglik
+loglik_negbinom <- fit_negbinom$loglik
+
+# Print log-likelihoods
+cat("Log-Likelihood of Poisson Distribution:", loglik_poisson, "\n")
+cat("Log-Likelihood of Negative Binomial Distribution:", loglik_negbinom, "\n")
+```
+
+Log Likelihood value is a measure of goodness of fit for any model.
+Higher the value (closer to zero) indicate a better fit.
+
+The Negative Binomial distribution fits the data better than the Poisson
+distribution because it has a higher log-likelihood value (less
+negative).
+
+The key reason why the Negative Binomial distribution fits better is
+that it accounts for over dispersion, a common characteristic in count
+data where the variance is greater than the mean. The Poisson
+distribution assumes that the mean and variance are equal, which is
+unrealistic in real-world data such as accident counts.
+
+## Fit Zero-Inflated Negative Model
+
+```{r}
+# Load necessary packages
+# install.packages("pscl")
+library(pscl)
+
+# Fit distributions to FATAL accidents
+fit_poisson_fatal <- fitdist(tidy_data_grouped$FATAL, "pois")
+fit_negbinom_fatal <- fitdist(tidy_data_grouped$FATAL, "nbinom")
+# Fit Zero-Inflated Negative Binomial (ZINB) for FATAL accidents
+fit_zeroinfl_fatal <- zeroinfl(FATAL ~ 1 | 1, data = tidy_data_grouped, dist = "negbin")
+
+# Fit distributions to SERIOUS accidents
+fit_poisson_serious <- fitdist(tidy_data_grouped$SERIOUS, "pois")
+fit_negbinom_serious <- fitdist(tidy_data_grouped$SERIOUS, "nbinom")
+# Fit Zero-Inflated Negative Binomial (ZINB) for SERIOUS accidents
+fit_zeroinfl_serious <- zeroinfl(SERIOUS ~ 1 | 1, data = tidy_data_grouped, dist = "negbin")
+
+# Create the results table
+results_table <- data.frame(
+  Distribution_name = c("Poisson", "Negative Binomial", "ZINB",
+                        "Poisson", "Negative Binomial", "ZINB"),
+  Accident_type = c("FATAL", "FATAL", "FATAL", "SERIOUS", "SERIOUS", "SERIOUS"),
+  Log_likelihood_value = c(fit_poisson_fatal$loglik, fit_negbinom_fatal$loglik, logLik(fit_zeroinfl_fatal),
+                           fit_poisson_serious$loglik, fit_negbinom_serious$loglik, logLik(fit_zeroinfl_serious))
+)
+
+# Print the results table
+print(results_table)
+```
+
+Since we are measuring the counts of accidents, the data should be
+modeled using a Poisson or Negative Binomial distribution within a
+generalized linear model (GLM) framework. Both Poisson and Negative
+Binomial distributions are appropriate for discrete count data because
+they share two key characteristics: 1) they only generate zero and
+positive integer values, and 2) the variance is a function of the mean
+(Jeffrey A, nd).
+
+In the GLM family, another suitable model is the Zero-Inflated Negative
+Binomial (ZINB). ZINB is part of the broader category of zero-inflated
+models, which are used when the data contain more zero counts than
+standard distributions can predict. Accident count data often exhibit
+this feature, where many observations include no accidents, resulting in
+an excess of zeros (UCLA Statistical Methods and Data Analytics, nd).
+
+After fitting 3 models to 2 types of accidents (fatal and serous), the
+ZINB model provides a better fit for 2 types of accident, indicating the
+presence of excess zeros (i.e., more instances of zero fatal accidents
+than the Negative Binomial model would predict).
+
+# Q4: Source weather data (10 points)
+
+I use the NOAA dataset <https://www.ncei.noaa.gov/pub/data/ghcn/daily/ghcnd-stations.txt> because it provides daily temperature and
+precipitation data for the same region with car accident dataset. The
+metadata includes date, station, and weather observation terminology
+(Menne et al.).
+
+1.  PRCP (Precipitation): Amount of precipitation (rain, snow, etc.) in
+    mm. 
+2.  TMAX: (Maximum Temperature): Highest temperature of the day in °C.
+3.  TMIN (Minimum Temperature): Lowest temperature of the day in °C.
+4.  TAVG (Average Temperature): Mean temperature of the day in °C.
+5.  DATN: Number of days included in the multiday minimum temperature
+    (MDTN).
+6.  MDTN: Multiday minimum temperature.
+7.  DATX: Number of days included in the multiday maximum temperature
+    (MDTX).
+8.  MDTX: Multiday maximum temperature.
+
+## Load the dataset
+
+```{r}
+weather <- list.files(path="~/Documents/R/weather", full.names = TRUE) %>% 
+  lapply(read_csv) %>% 
+  bind_rows
+```
+
+Tidy the dataset
+
+```{r}
+# Use pivot_wider to make datatype values into columns
+weather <- weather %>%
+  pivot_wider(
+    names_from = datatype,  
+    values_from = value 
+  )
+```
+
+Match the station name
+
+```{r}
+# Create a lookup table for Station ID and Region
+station_region_lookup <- data.frame(
+  station = c("GHCND:ASN00085279", "GHCND:ASN00086282", "GHCND:ASN00086077", 
+                 "GHCND:ASN00082170", "GHCND:ASN00081123", "GHCND:ASN00090186", "GHCND:ASN00089085"),
+  region_name = c("EASTERN REGION", "METROPOLITAN NORTH WEST REGION", "METROPOLITAN SOUTH EAST REGION", 
+                  "NORTHERN EASTERN REGION", "NORTHERN REGION", "SOUTH WESTERN REGION", "WESTERN REGION")
+)
+
+# Replace Station ID with Region Name by joining with the lookup table
+weather <- weather %>%
+  left_join(station_region_lookup, by = "station") %>%  # Join based on Station ID
+  mutate(Region = region_name) %>%  # Replace station_id with the region_name
+  dplyr::select(-region_name, -station)  # Remove the extra column after replacement
+
+# View the result
+head(weather)
+```
+
+Since we need the daily average temperature (TAVG) to calculate the
+Excess Heat Factor (EHF), it is important to handle cases where TAVG is
+recorded for some stations under different attributes. Given that the
+attributes are not a significant feature for our analysis, we will merge
+rows that correspond to the same region and date but are split due to
+differences in attributes. This will ensure that we have a single row
+for each region and date, consolidating the necessary data.
+
+```{r}
+# Group by 'date' and 'stations', and combine rows by choosing the non-NA values for each column
+weather <- weather %>%
+  group_by(date, Region) %>%
+  summarize(across(everything(), ~ coalesce(.x[!is.na(.x)][1], .x[1])), .groups = "drop")
+```
+
+Now let check the NA in each features
+
+```{r}
+# use the VIM package
+# install.packages("VIM")
+library(VIM)
+
+# Visualize missing values
+aggr(weather, col = c('navyblue', 'red'), numbers = TRUE, sortVars = TRUE, labels = names(weather), cex.axis = .7, gap = 3, ylab = c("Missing data", "Pattern"))
+```
+
+As we can see on the graph, there is still few missing value for TMIN,
+TMAX and PRCP and high missing value for TAVG. According to Nairn, John
+R. (2015), TAVG in Australia is computed by taking the average of the
+daily maximum and daily minimum temperatures:
+
+$$
+\text{TAVG} = \frac{\text{TMAX} + \text{TMIN}}{2}
+$$
+
+Therefore, in order to feed TAVG data to calculate EHF, we need full
+TMAX and TMIN. To impute TMAX and TMIN to fit with the paper approach
+where the daily maximum temperature (TMAX) is recorded before the daily
+minimum temperature (TMIN), and both are observed within the same
+9am-to-9am 24-hour period, the best imputation method would be STL
+(Seasonal-Trend decomposition using LOESS) Imputation.
+
+Temperature data inherently has seasonal patterns (e.g., hotter in
+summer, cooler in winter), as well as long-term trends (e.g., gradual
+warming or cooling over the year). The paper approach aligns well with
+these characteristics since it looks at temperatures over a full 24-hour
+cycle that naturally includes daily and seasonal variations
+
+```{r}
+# Load necessary library
+library(imputeTS)
+
+# Use appropriate imputation methods for each variable
+weather <- weather %>%
+  mutate(
+    PRCP = na_seadec(PRCP, algorithm = "interpolation"),  
+    TMAX = na_seadec(TMAX, algorithm = "interpolation"), 
+    TMIN = na_seadec(TMIN, algorithm = "interpolation") 
+  )
+
+colSums(is.na(weather))
+```
+
+# Heatwaves, precipitation and road traffic accidents
+
+John Nairn and Robert Fawcett from the Australian Bureau of Meteorology
+have proposed a measure for the heatwave, called the excess heat factor
+(EHF). Read the following article and summarise your understanding in
+terms of the definition of the EHF.
+<https://dx.doi.org/10.3390%2Fijerph120100227> (4 points)
+
+The Excess Heat Factor (EHF) is designed to quantify the intensity of
+heatwaves by combining two key aspects: (1) how hot the temperature over
+a three-day period (TDP) is compared to a long-term annual temperature
+threshold specific to each location, and (2) how much hotter the TDP is
+compared to the temperatures of the preceding 30 days.
+
+1.  **First component - Significance Index (EHIsig)**:
+
+    -   This index captures how anomalously hot a three-day period (TDP)
+        is compared to a long-term threshold. Specifically, it measures
+        the average daily mean temperature (DMT) over three days against
+        the climatological 95th percentile (T95) for that location and
+        time of year.
+    -   T95 is derived from historical data and represents an unusually
+        high temperature for the region. If the three-day average DMT
+        exceeds this threshold, it indicates a potential heatwave.
+    -   A positive EHIsig suggests that the temperatures are
+        significantly above normal for the local climate, signaling an
+        unusually warm period. Conversely, a negative or zero EHIsig
+        means that the TDP is not exceptionally hot, and thus a heatwave
+        is not present. As a result, heatwaves as defined by this method
+        generally do not occur in the winter half of the year.
+
+    $$
+    \text{EHIsig} = \frac{T_i + T_{i+1} + T_{i+2}}{3} - T95
+    $$
+
+2.  **Second component - Acclimatization Index (EHIaccl)**:
+
+    -   This index accounts for how recent temperature patterns may
+        affect a population’s adaptation to heat. It compares the
+        current three-day average DMT with the average DMT over the
+        previous 30 days.
+    -   If recent temperatures have been lower, a sudden spike will have
+        a greater impact, and this is reflected in a higher EHIaccl. A
+        positive EHIaccl indicates that the current period is hotter
+        than recent days, suggesting insufficient acclimatization to the
+        current heat.
+    -   Both indices (EHIsig and EHIaccl) are anomalies measured in
+        degrees Celsius, with EHIsig reflecting long-term climate
+        conditions and EHIaccl reflecting recent conditions. A positive
+        EHIaccl means the population may not be prepared for the abrupt
+        increase in temperature, leading to adverse effects.
+
+    $$
+    \text{EHIaccl} = \frac{T_i + T_{i+1} + T_{i+2}}{3} - \frac{\sum_{j=i-1}^{i-30} T_j}{30}
+    $$
+
+3.  **EHF**:
+
+    -   The EHF is calculated by multiplying the significance index
+        (EHIsig) by a factor influenced by the acclimatization index
+        (EHIaccl). This ensures that if EHIsig is negative (i.e., the
+        temperature is not extreme), the EHF will also be negative or
+        zero, meaning no heatwave is identified.
+    -   If EHIaccl is positive, it amplifies the EHF, reflecting the
+        added severity when there is a lack of acclimatization. This
+        makes the EHF more sensitive to sudden increases in heat.
+
+    $$
+    \text{EHF} = \text{EHIsig} \times \max(1, \text{EHIaccl})
+    $$
+
+    This formulation ensures that the sign of the EHF is the same as the
+    sign of EHIsig, meaning a heatwave is only declared if EHIsig is
+    positive. If EHIaccl is also positive, it increases the impact on
+    the EHF.
+
+    The EHF helps differentiate between regular warm periods and
+    dangerous heatwaves, providing a useful tool for assessing public
+    health risks and the need for emergency measures
+
+## Calculate the daily EHF values & Plot the daily EHF values. 
+
+I calculate the EHF for 7 regions in Victoria ("Eastern Region",
+"Metropolitan North West Region", "Metropolitan South East Region",
+"Northern Eastern Region", "Northern Region", "South Western Region",
+"Western Region")
+
+```{r}
+# Load necessary libraries
+library(ggplot2)
+library(zoo)
+
+# Function to calculate EHF
+EHF <- function(ta, t95 = NULL, forward = F) {
+  if (forward) {
+    t3 <- zoo::rollapply(ta, width = 3, FUN = mean, fill = NA, align = "left")
+    t30 <- zoo::rollapplyr(
+      c(rep(NA, 1), ta[1:(length(ta) - 1)]),
+      width = 30, FUN = mean, fill = NA
+    )
+  } else {
+    t3 <- zoo::rollapplyr(ta, width = 3, FUN = mean, fill = NA)
+    t30 <- zoo::rollapplyr(
+      c(rep(NA, 3), ta[1:(length(ta) - 3)]),
+      width = 30, FUN = mean, fill = NA
+    )
+  }
+  
+  # calculate the 95th percentile if not provided
+  if (is.null(t95)) {
+    t95 <- quantile(ta, 0.95, na.rm = TRUE)
+  }
+  
+  # Calculate the EHI components
+  EHIsig <- t3 - t95
+  EHIaccl <- t3 - t30
+  EHF <- EHIsig * pmax(1, EHIaccl)
+  return(EHF)
+}
+
+# Check for missing TAVG, calculate it if NA (using TMAX and TMIN)
+weather <- weather %>%
+  mutate(TAVG = ifelse(is.na(TAVG), (TMAX + TMIN) / 2, TAVG))
+
+# Calculate EHF using the available TAVG data
+EHF_data <- EHF(weather$TAVG)
+
+# Add the EHF column to the weather dataset
+weather <- weather %>%
+  mutate(EHF = EHF_data)
+
+# Plot the daily EHF values
+ggplot(data = weather, aes(x = date, y = EHF)) +
+  geom_line() +
+  labs(x = "Date", y = "EHF Value") +
+  ggtitle("Daily Excess Heat Factor (EHF) Values")
+```
+
+The graph effectively highlights the seasonality of heatwaves in
+Australia, with frequent occurrences marked by peaks in positive EHF
+values. Apart from the exceptionally high spike in 2019, which
+corresponds to a real event, these heatwaves follow an annual cycle,
+typically peaking during the summer months. Several years also show
+extreme heat events. The negative EHF values indicate cooler periods,
+which are commonly observed between heatwave episodes.
+
+# Model planning
+
+The main goal of the model is to predict the number of car traffic
+accidents based on weather severity patterns. This prediction can help
+identify road accidents risk, especially during extreme weather events
+such as heatwaves, or heavy rain/ snows.
+
+## Relationship and data:
+
+The model will predict the correlation relationship between weather
+patterns (e.g., temperature, precipitation, EHF) and the number of road
+traffic accidents. The goal is to predict how weather conditions impact
+the likelihood of road accidents.
+
+The response variable is the number of car traffic accidents.
+
+The predictor variables will include:
+
+-   Weather variables: Temperature (TMAX, TMIN), precipitation (PRCP),
+    extreme heat (EHF), etc.
+-   Temporal variables: Date, day of the week, seasonality.
+
+Mst weather-related variables (e.g., temperature, precipitation)
+are routinely collected by meteorological services and are typically
+available in real time or with minimal delay. Road accident data is
+usually collected by local authorities or law enforcement agencies, but
+it may not be available as promptly.
+
+When building a model based on historical data, I must consider whether
+future data will exhibit similar characteristics. This assumption that
+the patterns, trends, and relationships observed in the past will
+continue into the future; is fundamental to the predictive power of my
+model. However, several factors can influence whether this holds true.
+For instance, if the underlying processes generating the data are stable
+and stationary, it's more likely that future data will resemble
+historical data; stationary means that the statistical properties of
+the process, like mean and variance, do not change over time.
+Additionally, external factors and trends such as sudden weather changes
+can alter the data's characteristics.
+
+## Model generalization
+
+To predict the number and severity of road traffic accidents based on
+weather conditions, there are several statistical methods can be
+applied:
+
+-   Generalized Linear Models (GLM) – Poisson/Negative Binomial
+    Regression: The response variable (number of accidents) is count
+    data, which is non-negative and typically follows a Poisson
+    distribution. However, if the variance in the number of accidents is
+    higher than the mean (overdispersion), a Negative Binomial
+    Regression will be more appropriate. This model will allow us to
+    model the number of accidents as a function of weather patterns
+    (e.g., temperature, precipitation) and other covariates (e.g., time
+    of day, day of the week).
+
+-   Generalized Additive Models (GAM): is a flexible extension of linear
+    regression that allows for non-linear relationships between the
+    predictor variables and the response variable by using smoothing
+    functions (splines). In the context of weather-related road
+    accidents, GAM can capture complex, non-linear effects of weather
+    patterns on accidents (e.g., how the risk of accidents changes in
+    response to temperature or precipitation in a non-linear way).
+
+# Model the number of road traffic accidents
+
+In this question you will build a model to predict the number of road
+traffic accidents. You will use the car_accidents_victoria dataset and
+the weather data. We can start with simple models and gradually make
+them more complex and improve them. For example, you can use the EHF as
+an additional predictor to augment the model. Let’s denote by Y the road
+traffic accident variable. Randomly pick a region from the road traffic
+accidents data.
+
+Fit a linear model for Y according to your model(s) above. Plot the
+fitted values and the residuals. Assess the model fit. Is a linear
+function sufficient for modelling the trend of Y? Support your
+conclusion with plots. (4 points)
+
+Create a new dataset that contain both accidents and weather record
+
+```{r}
+# Filter the data for Metropolitan North West Region
+region_accident <- tidy_data %>%
+  filter(Region == "METROPOLITAN NORTH WEST REGION")  
+
+region_weather <- weather %>%
+  filter(Region == "METROPOLITAN NORTH WEST REGION") 
+
+# Perform a left join using both the date and region columns
+data <- region_accident %>%
+  left_join(region_weather, by = c("DATE" = "date", "Region" = "Region"))
+
+# Convert the DATE column to numeric (e.g., days since the start of the dataset)
+data$DATE_num <- as.numeric(as.Date(data$DATE, format="%Y-%m-%d"))
+
+# Filter relevant columns
+sub_data <- data[, c(7, 9:12, 17:18)]
+
+# Perform forward fill to handle NA values
+sub_data <- sub_data %>%
+  fill(everything(), .direction = "down")
+```
+
+From looking at the ggpairs() output, total accidents (y) doesn't relate
+to any other variables, there is a strong correlation in the temperature
+family, between TAVG and TMAX, TMIN. The scatter plot also show a
+non-linear relation between total accidents (y) and other variables
+
+```{r}
+# Load the GGally package
+# install.packages("GGally")
+library(GGally)
+
+# Check correlation of each variable
+ggpairs(sub_data)
+```
+
+To avoid multicollinearity, I'll choose predictors do not have strong
+correlations with each other is PRCP, Date_num and TMAX to fit a linear
+model (lm).
+
+**Forming a hypothesis**
+
+Before fitting to model, I'll form a hypothesis that null hypothesis
+(Ho) states there is no statistically significant relationship between
+the predictors (PRCP, Date_num, TMAX) and the response variable
+(total_accidents).
+
+```{r}
+# Fit a linear model (Y ~ PRCP + TAVG)
+lm <- lm(TOTAL_ACCIDENTS ~ DATE_num + PRCP + TMAX, data = sub_data)
+
+# Print the summary of the model to check coefficients and significance
+summary(lm)
+```
+
+We can see from the model output that the p-value (< alpha 0.05)
+rejects null hypothesis, indicating that these predictors are
+significantly related to the response variable. Therefore, the model
+suggests that the predictors have a statistically significant impact on
+the response.
+
+Additionally, the R-squared value is extremely low, indicating that only
+1% of the variation in the response variable is explained by the
+predictors. This suggests that the model does not fit the data well.
+
+```{r}
+# The *augment* function outputs fitted values and residuals.
+library(broom)
+lm_result <- lm %>% 
+  augment
+
+# Plot the fitted values and the residuals
+lm_result %>% 
+  ggplot(aes(x = .fitted, y = .resid)) +
+  geom_point() + 
+  geom_quantile() +
+  geom_smooth(colour = 'red',method = 'lm') +
+  theme_minimal() +
+  labs(title = "Residuals vs Fitted value", x = "Residuals", y = "Fitted value") 
+```
+
+Ideally, the residuals should scatter randomly around 0 with no clear
+pattern. In this plot, a significant number of residuals fall outside
+the confidence bands. This could indicate that the model is not
+capturing important aspects of the data for these observations, or it
+might suggest the presence of outliers or influential points that the
+model is not accounting for properly.
+
+## Q7.3
+
+As we are not interested in the trend itself, relax the linearity
+assumption by fitting a generalized additive model (GAM). Assess the
+model fit. Do you see patterns in the residuals indicating insufficient
+model fit? (5 points)
+
+Since my response variable y is a discrete count of accidents, I'll use log link function which used for count data modeled by a Poisson distribution.
+
+```{r}
+library(mgcv)
+
+# Fit the GAM model with tensor product smooths
+ps <- gam(TOTAL_ACCIDENTS ~ s(DATE_num, k=49) + te(PRCP, k=49) + te(TMAX, k=49), 
+          family = poisson(link = log),
+          data = sub_data)
+
+# Summarize the model
+summary(ps)
+```
+
+We can see from the model output that the DATE_num and PRCP is
+significant while TMAX is not relationship with total accidents.
+Additionally, the deviance explained value is 24%, suggesting that the
+models have a moderated-low explanatory power and predictability.
+
+```{r}
+# Use gam.check to understand the goodness of fit
+gam.check(ps)
+```
+
+The `gam.check()` function in R assesses model convergence and checks
+for adequate basis functions. The output shows that the model achieved
+full convergence with $k = 48$. However, for `DATE_num` and `PRCP`, the
+small p-values indicate that the residuals are not randomly distributed,
+suggesting the model may not have enough basis functions. However I
+increased $k$ and it does not improve the k-index, indicating that
+simply increasing $k$ may not resolve the underfit issue.
+
+In the Q-Q plot, which compares the residuals to a normal distribution,
+the residuals are not generally close to the straight line, indicating
+that the model doesn't fits reasonably well.
+
+The histogram of residuals shows a roughly symmetrical bell-shaped
+distribution, with residuals centered around 0, indicating a generally
+good prediction performance.
+
+From the plot of residuals and the plot of response against fitted
+values, the points appear scattered on the right tail, suggesting the
+presence of outliers. However, these outliers are not problematic in
+this context, as we are predicting car accidents based on weather
+conditions, such as high temperatures. Therefore, these outliers likely
+contain valuable information about extreme weather events and their
+impact on accidents, and should not be removed.
+
+## Compare the models using the Akaike information criterion (AIC). Report the best-fitted model through coefficient estimates and/or plots
+
+```{r}
+library(knitr)
+kable(AIC(lm, ps))
+```
+
+Since the Akaike Information Criterion (AIC) is used to compare models,
+with a lower AIC indicating a better fit, the GAM with Poisson
+distribution is the preferred model as it has a lower AIC value than the
+linear model.
+
+## Analyse the residuals. 
+
+Using the autocorrelation function (ACF) to assess whether there are
+patterns in the residuals
+
+```{r}
+acf(residuals(ps), main = "ACF of Residuals")
+```
+
+The significant positive correlations at lag 1, 7, 14, 21, 28 suggest a
+weekly cycle in the data. This indicates that residuals are correlated
+on a weekly basis. This could mean that the model is underestimating the
+number of accidents on these weekly cycles.
+
+The significant negative correlations at lag 10, 11, 16, 17, 24, 25, 31
+show the pattern in residuals may fluctuate such that after 10 or 11
+days, the pattern of car accidents is reversed (e.g., from
+over-prediction to under-prediction or vice versa).
+
+The residuals exhibit autocorrelation at certain time lags (like weekly
+cycles), it may indicate that there are other periodic factors affecting
+car accidents (e.g., weekday).
+
+## Does the predictor EHF improve the model fit? 
+
+```{r}
+# Fit the GAM model with tensor product smooths
+ps_ehf <- gam(TOTAL_ACCIDENTS ~ s(DATE_num, k=49) + te(PRCP, k=49) + te(TMAX, k=49) + te(EHF, k=49), 
+          family = poisson(link = log),
+          data = sub_data)
+
+# Summarize the model
+summary(ps_ehf)
+```
+
+By examining the AIC, we can clearly see that the inclusion of the
+predictor EHF improves the model fit, as evidenced by the lower AIC
+(9879) compared to models without EHF (9904).
+
+```{r}
+kable(AIC(lm, ps, ps_ehf))
+```
+
+## Is EHF a good predictor for road traffic accidents? 
+
+By examining the change in adjusted R-squared (+0.3%) after adding EHF,
+we see that the increase indicates the new predictor improves the
+model's fit more than would be expected by chance, although the increase
+is not significant.
+
+```{r}
+# Get the deviance explained by the full model
+full_dev_explained <- summary(ps_ehf)$dev.expl
+
+# List of predictor variables
+predictors <- c("DATE_num", "PRCP", "TMAX", "EHF")
+
+# Initialize a vector to store incremental impacts
+incremental_impact <- numeric(length(predictors))
+names(incremental_impact) <- predictors
+
+# Loop over each predictor variable
+for (var in predictors) {
+  # Create a formula excluding the current variable
+  reduced_formula <- as.formula(
+    paste("TOTAL_ACCIDENTS ~", 
+          paste(
+            paste0("te(", predictors[predictors != var], ", k = 49)"), 
+            collapse = " + "
+          )
+    )
+  )
+  
+  # Fit the reduced model
+  reduced_model <- gam(reduced_formula, 
+                       family = poisson(link = log),
+                       data = sub_data)
+  
+  # Calculate deviance explained by the reduced model
+  reduced_dev_explained <- summary(reduced_model)$dev.expl
+  
+  # Calculate the incremental impact
+  incremental_impact[var] <- full_dev_explained - reduced_dev_explained
+}
+
+# Plot the incremental impact
+barplot(
+  incremental_impact,
+  main = "Incremental Impact of Predictor Variables",
+  xlab = "Variables",
+  ylab = "Incremental Deviance Explained",
+  las = 2,
+  col = "skyblue"
+)
+```
+
+However, when comparing the incremental impact of EHF to other predictor
+variables, we see that EHF does not play sp important role in the model
+(as it less contributes to explaining the variance in the model).
+
+**Fit other predictors**
+
+According to Rowland B. et al., various weather conditions can impact
+drivers and increase the likelihood of car accidents, such as wind
+speed, thunderstorms, lightning, cyclonic conditions, and floods.
+However, due to the limited availability of free datasets, it is
+challenging to include these factors in the analysis.
+
+The Bureau of Meteorology (BoM) provides a free solar exposure dataset,
+which covers the same time period and is available for the METROPOLITAN
+NORTH WEST REGION. While it is not ideal, solar exposure can be
+considered as an additional predictor in the model.
+
+Additionally, TMIN (minimum temperature) can also be incorporated into
+the model, as severe cold weather may influence how drivers control
+their vehicles on the road.
+
+```{r}
+# Load solar data
+solar <- list.files(path="~/Documents/R/solarexp", full.names = TRUE) %>% 
+  lapply(read_csv) %>% 
+  bind_rows
+```
+
+```{r}
+library(lubridate)
+# Tidy solar data
+solar <- solar %>% slice(1:1643)
+
+solar <- solar %>%
+  mutate(Date = make_date(Year, Month, Day))
+
+solar$DATE_num <- as.numeric(as.Date(solar$Date, format="%Y-%m-%d"))
+
+solar_filtered <- solar %>% 
+  dplyr::select(DATE_num, `Daily global solar exposure (MJ/m*m)`)
+
+# Perform the left join with sub_data by DATE_num
+sub_data <- sub_data %>%
+  left_join(solar_filtered, by = "DATE_num")
+
+# Rename the column
+sub_data <- sub_data %>%
+  rename(solarexp = `Daily global solar exposure (MJ/m*m)`)
+```
+
+```{r}
+# Forward fill NA values in the solarexp column
+sub_data <- sub_data %>%
+  fill(solarexp, .direction = "down")
+```
+
+Check correlation between each variables
+
+```{r}
+ggpairs(sub_data)
+```
+
+To minimize the effects of multicollinearity, I will adjust the choice
+of predictors, ensuring they have less than moderate correlation with
+each other.
+
+As we introduce the new variable Solar Exposure, it shows high
+correlation with TMAX but moderate correlation with TMIN. Therefore, I
+will replace TMAX with Solar Exposure and retain TMIN in the model.
+
+Additionally, based on Question 7.5, we know there is a weekly cycle
+that was previously not captured. To address this, I will include
+weekday as a factor in the model to evaluate if it improves the fit.
+
+```{r}
+# Add the weekday
+sub_data$Date <- as.Date(sub_data$DATE_num, origin = "1970-01-01")
+sub_data <- sub_data %>%
+  mutate(week_day = weekdays(Date))
+```
+
+```{r}
+# Convert week_day to a factor
+sub_data <- sub_data %>%
+  mutate(week_day = factor(week_day))
+
+# Include week_day in the GAM model
+ps_more <- gam(TOTAL_ACCIDENTS ~ s(DATE_num, by = week_day, k=49) + te(PRCP, k=49) + s(TMIN, k=49) + 
+                te(EHF, k=49) + te(solarexp, k=49) + week_day, 
+                family = poisson(link = log),
+                data = sub_data)
+
+# Summarize the model
+summary(ps_more)
+```
+
+```{r}
+kable(AIC(ps, ps_ehf, ps_more))
+```
+
+The AIC for the latest model, which includes Solar Exposure and weekday,
+shows a significant improvement in model performance. The AIC is the
+lowest among three GAM fitted models (9489.558), while the deviance
+explained increased notably to 42%, shifting the model from low
+explanatory power to a moderate-high fit. Additionally, the adjusted
+R-squared increased by aprox. 84% compared to the previous model (from
+19% to 35%), indicating that the added predictors have substantially
+improved the model's fit.
+
+```{r}
+# Get the deviance explained by the full model
+full_dev_explained <- summary(ps_more)$dev.expl
+
+# List of predictor variables
+predictors <- c("DATE_num", "PRCP", "TMIN", "EHF", "solarexp")
+
+# Initialize a vector to store incremental impacts
+incremental_impact <- numeric(length(predictors))
+names(incremental_impact) <- predictors
+
+# Loop over each predictor variable
+for (var in predictors) {
+  # Create a formula excluding the current variable
+  reduced_formula <- as.formula(
+    paste("TOTAL_ACCIDENTS ~", 
+          paste(
+            paste0("te(", predictors[predictors != var], ", k = 49)"), 
+            collapse = " + "
+          )
+    )
+  )
+  
+  # Fit the reduced model
+  reduced_model <- gam(reduced_formula, 
+                       family = poisson(link = log),
+                       data = sub_data)
+  
+  # Calculate deviance explained by the reduced model
+  reduced_dev_explained <- summary(reduced_model)$dev.expl
+  
+  # Calculate the incremental impact
+  incremental_impact[var] <- full_dev_explained - reduced_dev_explained
+}
+
+# Plot the incremental impact
+barplot(
+  incremental_impact,
+  main = "Incremental Impact of Predictor Variables",
+  xlab = "Variables",
+  ylab = "Incremental Deviance Explained",
+  las = 2,
+  col = "skyblue"
+)
+```
+
+Each predictor now shows a higher contribution to explaining the
+variance in the model compared to the previous model. DATE_num continues
+to have the highest contribution, reinforcing that time is a strong
+predictor of the outcome (number of car accidents). However, the other
+predictors have significantly increased their importance, with an
+average contribution rising from 2% in the previous model to 15% in the
+current model.
+
+These predictors—reflecting various weather conditions such as
+precipitation, cold temperature, heat stress, and solar exposure—now
+moderately influence the prediction of car accidents. This suggests that
+including these weather-related variables provides substantial value in
+improving the model's ability to explain the variance in car accident
+occurrences.
+
+# References
+
+1.  Afrifa-Yamoah, E., Mueller, U. A., Taylor, S. M., & Fisher, A. J. (2020). Missing data imputation of high-resolution temporal climate time series data. Meteorological Applications, 27(6), e1873. https://doi.org/10.1002/met.1873
+
+2. Dong, Y., & Peng, C. Y. J. (2013). Principled missing data methods for researchers. SpringerPlus, 2, Article 222. https://doi.org/10.1186/2193-1801-2-222
+
+3. Investopedia Team. (n.d.). R-squared vs. adjusted R-squared: What's the difference? Investopedia. Retrieved [Date], from https://www.investopedia.com/ask/answers/012615/whats-difference-between-rsquared-and-adjusted-rsquared.asp
+
+4. Menne, M. J., Durre, I., Korzeniewski, B., McNeill, S., Thomas, K., Yin, X., Houston, T. G. (2012). Global Historical Climatology Network—Daily (GHCN-Daily), Version 3. NOAA National Climatic Data Center. https://doi.org/10.7289/V5D21VHZ
+
+5. Nairn, J. R., & Fawcett, R. J. B. (2015). The excess heat factor: A metric for heatwave intensity and its use in classifying heatwave severity. International Journal of Environmental Research and Public Health, 12(1), 227–253. https://doi.org/10.3390/ijerph120100227
+
+6. Nau, R. (n.d.). What's a good value for R-squared? Duke University. Retrieved [Date], from https://people.duke.edu/~rnau/rsquared.htm#percentexplained
+
+7. Rowland, B., Davey, J., Freeman, J., & Wishart, D. (n.d.). Road transport sensitivities to weather and climate change in Australia. Centre for Accident Research and Road Safety – Queensland, Queensland University of Technology.
+
+8. UCLA Statistical Methods and Data Analytics. (n.d.). Zero-inflated Poisson regression | R data analysis examples. UCLA Advanced Research Computing. Retrieved from https://stats.oarc.ucla.edu/r/dae/zip/
+
+9. Walker, J. A. (n.d.). Elements of statistical modeling for experimental biology. Retrieved from https://www.middleprofessor.com/files/applied-biostatistics_bookdown/_book/generalized-linear-models-i-count-data.html
+
+10. Zou, H., & Hastie, T. (2005). Regularization and variable selection via the elastic net. Journal of the Royal Statistical Society: Series B (Statistical Methodology), 67(2), 301–320. https://doi.org/10.1111/j.1467-9868.2005.00503.x
